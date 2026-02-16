@@ -287,8 +287,11 @@ async function checkUi(target) {
 
 async function checkEmail(target) {
   const apexName = normalizeHost(target);
+  const dkimSelector = normalizeHost(config.EMAIL_DKIM_SELECTOR);
+  const dkimName = `${dkimSelector}._domainkey.${apexName}`;
   const dmarcName = `_dmarc.${apexName}`;
   const expectedCname = normalizeHost(config.UI_CNAME_EXPECTED);
+  const expectedDkimCname = normalizeHost(config.EMAIL_DKIM_CNAME_EXPECTED);
   const authorizedCnameIps = (config.UI_CNAME_AUTHORIZED_IPS || []).map(normalizeIp).filter(Boolean);
   const expectedMxHost = normalizeHost(config.EMAIL_MX_EXPECTED_HOST);
   const expectedMxPriority = config.EMAIL_MX_EXPECTED_PRIORITY;
@@ -296,6 +299,7 @@ async function checkEmail(target) {
   const expectedDmarc = config.EMAIL_DMARC_EXPECTED;
 
   const cnameRecords = await resolveCnameSafe(apexName);
+  const dkimCnameRecords = await resolveCnameSafe(dkimName);
   const mxRecords = await resolveMxSafe(apexName);
   const txtApex = await resolveTxtSafe(apexName);
   const txtDmarc = await resolveTxtSafe(dmarcName);
@@ -310,13 +314,16 @@ async function checkEmail(target) {
   );
   const spfOk = isSpfSatisfied(txtApex, expectedSpf);
   const dmarcOk = txtDmarc.includes(expectedDmarc);
+  const dkimOk = dkimCnameRecords.some((record) => normalizeHost(record) === expectedDkimCname);
 
   const cnameMeta = capAndSanitizeHosts(cnameRecords);
+  const dkimCnameMeta = capAndSanitizeHosts(dkimCnameRecords);
   const mxMeta = capAndSanitizeMx(mxRecords);
   const txtApexMeta = capAndSanitizeTxt(txtApex);
   const txtDmarcMeta = capAndSanitizeTxt(txtDmarc);
 
   const cnameTruncated = cnameMeta.truncated || cnameMeta.valueTruncated;
+  const dkimCnameTruncated = dkimCnameMeta.truncated || dkimCnameMeta.valueTruncated;
   const mxTruncated = mxMeta.truncated || mxMeta.valueTruncated;
   const spfTruncated = txtApexMeta.truncated || txtApexMeta.valueTruncated;
   const dmarcTruncated = txtDmarcMeta.truncated || txtDmarcMeta.valueTruncated;
@@ -358,6 +365,15 @@ async function checkEmail(target) {
       found: txtDmarcMeta.values,
       ok: dmarcOk,
       found_truncated: dmarcTruncated
+    },
+    {
+      key: 'DKIM',
+      type: 'CNAME',
+      name: dkimName,
+      expected: expectedDkimCname,
+      found: dkimCnameMeta.values,
+      ok: dkimOk,
+      found_truncated: dkimCnameTruncated
     }
   ];
 
@@ -374,7 +390,10 @@ async function checkEmail(target) {
     txt_apex_truncated: spfTruncated,
     txt_dmarc: txtDmarcMeta.values,
     txt_dmarc_count: txtDmarcMeta.total,
-    txt_dmarc_truncated: dmarcTruncated
+    txt_dmarc_truncated: dmarcTruncated,
+    dkim_cname: dkimCnameMeta.values,
+    dkim_cname_count: dkimCnameMeta.total,
+    dkim_cname_truncated: dkimCnameTruncated
   };
 
   if (authorizedCnameIps.length > 0) {
@@ -401,12 +420,13 @@ async function checkEmail(target) {
   }
 
   if (cnameMeta.hash) snapshot.cname_hash = cnameMeta.hash;
+  if (dkimCnameMeta.hash) snapshot.dkim_cname_hash = dkimCnameMeta.hash;
   if (mxMeta.hash) snapshot.mx_hash = mxMeta.hash;
   if (txtApexMeta.hash) snapshot.txt_apex_hash = txtApexMeta.hash;
   if (txtDmarcMeta.hash) snapshot.txt_dmarc_hash = txtDmarcMeta.hash;
 
   return {
-    ok: cnameOk && mxOk && spfOk && dmarcOk,
+    ok: cnameOk && mxOk && spfOk && dmarcOk && dkimOk,
     missing,
     snapshot
   };

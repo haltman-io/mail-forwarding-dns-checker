@@ -23,6 +23,7 @@ function maxDate(dates) {
 function missingNameForKey(key, target) {
   const normalizedKey = typeof key === 'string' ? key.toUpperCase() : '';
   if (normalizedKey === 'DMARC') return `_dmarc.${target}`;
+  if (normalizedKey === 'DKIM') return `${config.EMAIL_DKIM_SELECTOR}._domainkey.${target}`;
   return target;
 }
 
@@ -30,7 +31,7 @@ function missingTypeForKey(key) {
   const normalizedKey = typeof key === 'string' ? key.toUpperCase() : '';
   if (normalizedKey === 'SPF' || normalizedKey === 'DMARC') return 'TXT';
   if (normalizedKey === 'MX') return 'MX';
-  if (normalizedKey === 'CNAME') return 'CNAME';
+  if (normalizedKey === 'CNAME' || normalizedKey === 'DKIM') return 'CNAME';
   return normalizedKey || 'UNKNOWN';
 }
 
@@ -83,6 +84,14 @@ function fallbackMissing(target) {
       expected: config.EMAIL_DMARC_EXPECTED,
       found: [],
       ok: false
+    },
+    {
+      key: 'DKIM',
+      type: 'CNAME',
+      name: `${config.EMAIL_DKIM_SELECTOR}._domainkey.${target}`,
+      expected: config.EMAIL_DKIM_CNAME_EXPECTED,
+      found: [],
+      ok: false
     }
   ];
 }
@@ -127,7 +136,7 @@ function ensureUnifiedMissing(missing, target) {
     }
   }
 
-  return ['CNAME', 'MX', 'SPF', 'DMARC'].map(
+  return ['CNAME', 'MX', 'SPF', 'DMARC', 'DKIM'].map(
     (key) => foundByKey.get(key) || fallbackByKey.get(key)
   );
 }

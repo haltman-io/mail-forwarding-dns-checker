@@ -45,7 +45,8 @@ function buildCriteriaText() {
     cnameRule,
     `- MX must include: ${sanitizeForLogAndEmail(config.EMAIL_MX_EXPECTED_HOST, 200)} priority ${sanitizeForLogAndEmail(config.EMAIL_MX_EXPECTED_PRIORITY, 50)}`,
     `- SPF TXT must include: ${sanitizeForLogAndEmail(config.EMAIL_SPF_EXPECTED, 200)}`,
-    `- DMARC TXT must include: ${sanitizeForLogAndEmail(config.EMAIL_DMARC_EXPECTED, 200)}`
+    `- DMARC TXT must include: ${sanitizeForLogAndEmail(config.EMAIL_DMARC_EXPECTED, 200)}`,
+    `- DKIM CNAME ${sanitizeForLogAndEmail(config.EMAIL_DKIM_SELECTOR, 100)}._domainkey.<target> must include: ${sanitizeForLogAndEmail(config.EMAIL_DKIM_CNAME_EXPECTED, 255)}`
   ].join('\n');
 }
 

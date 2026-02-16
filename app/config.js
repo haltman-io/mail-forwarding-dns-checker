@@ -126,6 +126,10 @@ const config = {
   ),
   EMAIL_MX_EXPECTED_HOST: (process.env.EMAIL_MX_EXPECTED_HOST || 'mail.abin.lat').toLowerCase(),
   EMAIL_MX_EXPECTED_PRIORITY: toInt(process.env.EMAIL_MX_EXPECTED_PRIORITY || '10', 'EMAIL_MX_EXPECTED_PRIORITY'),
+  EMAIL_DKIM_SELECTOR: (process.env.EMAIL_DKIM_SELECTOR || 's1').toLowerCase(),
+  EMAIL_DKIM_CNAME_EXPECTED: (
+    process.env.EMAIL_DKIM_CNAME_EXPECTED || 's1._domainkey.dkim.abin.lat'
+  ).toLowerCase(),
   EMAIL_SPF_EXPECTED: process.env.EMAIL_SPF_EXPECTED || 'v=spf1 mx -all',
   EMAIL_DMARC_EXPECTED: process.env.EMAIL_DMARC_EXPECTED || 'v=DMARC1; p=none'
 };

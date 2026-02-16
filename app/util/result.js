@@ -17,6 +17,9 @@ function summarizeSnapshot(snapshot) {
   if (Array.isArray(snapshot.txt_dmarc)) {
     summary.counts.txt_dmarc = snapshot.txt_dmarc_count || snapshot.txt_dmarc.length;
   }
+  if (Array.isArray(snapshot.dkim_cname)) {
+    summary.counts.dkim_cname = snapshot.dkim_cname_count || snapshot.dkim_cname.length;
+  }
 
   return summary;
 }
