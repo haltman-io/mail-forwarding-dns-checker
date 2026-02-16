@@ -186,12 +186,12 @@ async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDept
 
       for (const ip of ips) {
         resolvedIps.add(ip);
-        if (sawCname && normalizedAuthorizedIps.has(ip)) {
+        if (normalizedAuthorizedIps.has(ip)) {
           return {
             ok: true,
             chain,
             resolvedIps: Array.from(resolvedIps),
-            reason: 'authorized_ip_match',
+            reason: sawCname ? 'authorized_ip_match' : 'direct_ip_match',
             reachedMaxDepth: false,
             loopDetected
           };
@@ -206,8 +206,7 @@ async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDept
 
   const reachedMaxDepth = currentHosts.length > 0 && depth >= maxDepth;
   let reason = 'authorized_ip_not_found';
-  if (!sawCname) reason = 'no_cname_record';
-  else if (reachedMaxDepth) reason = 'max_chain_depth_reached';
+  if (reachedMaxDepth) reason = 'max_chain_depth_reached';
   else if (loopDetected) reason = 'cname_loop_detected';
 
   return {
@@ -328,17 +327,23 @@ async function checkEmail(target) {
   const spfTruncated = txtApexMeta.truncated || txtApexMeta.valueTruncated;
   const dmarcTruncated = txtDmarcMeta.truncated || txtDmarcMeta.valueTruncated;
 
+  const cnameEntry = {
+    key: 'CNAME',
+    type: 'CNAME',
+    name: apexName,
+    expected: expectedCname,
+    found: cnameMeta.values,
+    ok: cnameOk,
+    found_truncated: cnameTruncated,
+    expected_ips: authorizedCnameIps.length > 0 ? authorizedCnameIps : undefined
+  };
+  if (cnameChainResolution) {
+    cnameEntry.found_ips = cnameChainResolution.resolvedIps || [];
+    cnameEntry.chain_reason = cnameChainResolution.reason;
+  }
+
   const missing = [
-    {
-      key: 'CNAME',
-      type: 'CNAME',
-      name: apexName,
-      expected: expectedCname,
-      found: cnameMeta.values,
-      ok: cnameOk,
-      found_truncated: cnameTruncated,
-      expected_ips: authorizedCnameIps.length > 0 ? authorizedCnameIps : undefined
-    },
+    cnameEntry,
     {
       key: 'MX',
       type: 'MX',
