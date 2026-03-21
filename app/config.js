@@ -76,7 +76,7 @@ const resumeStartupJitterMs = Math.max(
 );
 
 const config = {
-  HOST: process.env.HOST || '0.0.0.0',
+  HOST: process.env.HOST || '127.0.0.1',
   PORT: toInt(requireEnv('PORT'), 'PORT'),
   DB_HOST: requireEnv('DB_HOST'),
   DB_USER: requireEnv('DB_USER'),
