@@ -2,8 +2,11 @@ const express = require('express');
 const db = require('../db');
 const config = require('../config');
 const { normalizeTarget } = require('../util/domain');
-const { toIso, log } = require('../util/time');
+const { toIso, log, now, addSeconds } = require('../util/time');
 const { checkByType } = require('../dns/checker');
+const { buildResultPayload } = require('../util/result');
+const mailer = require('../mailer');
+const { markDomainAsActive } = require('../util/domain-activation');
 
 const router = express.Router();
 const readOnlyChecks = new Map();
@@ -106,9 +109,14 @@ function fallbackMissing(type, target) {
   return [];
 }
 
-function canRunReadOnlyCheck(type, target, lastCheckedAt) {
+function canRunReadOnlyCheck(
+  type,
+  target,
+  lastCheckedAt,
+  minIntervalSeconds = config.CHECKDNS_MIN_INTERVAL_SECONDS
+) {
   const nowMs = Date.now();
-  const minIntervalMs = config.CHECKDNS_MIN_INTERVAL_SECONDS * 1000;
+  const minIntervalMs = minIntervalSeconds * 1000;
   if (lastCheckedAt && nowMs - lastCheckedAt.getTime() < minIntervalMs) {
     return false;
   }
@@ -160,29 +168,132 @@ function ensureUnifiedMissing(type, missing, target) {
   );
 }
 
-async function getMissingForRow(row, target) {
-  if (!row) return null;
-  const rowType = typeof row.type === 'string' ? row.type.toUpperCase() : '';
+function getStoredMissingForRow(row, rowType, target) {
+  if (!row || !row.last_check_result_json) return null;
 
-  if (row.last_check_result_json) {
-    try {
-      const parsed = JSON.parse(row.last_check_result_json);
-      if (parsed && parsed.missing) return ensureUnifiedMissing(rowType, parsed.missing, target);
-    } catch (err) {
-      log(`Failed to parse last_check_result_json for ${rowType} ${target}: ${err.message}`);
+  try {
+    const parsed = JSON.parse(row.last_check_result_json);
+    if (parsed && parsed.missing) {
+      return ensureUnifiedMissing(rowType, parsed.missing, target);
+    }
+  } catch (err) {
+    log(`Failed to parse last_check_result_json for ${rowType} ${target}: ${err.message}`);
+  }
+
+  return null;
+}
+
+function dateOrNull(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function shouldRefreshRow(row, rowType, target, hasStoredMissing) {
+  if (!row || row.status !== 'PENDING') return false;
+
+  const lastCheckedAt = dateOrNull(row.last_checked_at);
+  const nextCheckAt = dateOrNull(row.next_check_at);
+  const nowDate = now();
+
+  if (hasStoredMissing && nextCheckAt && nowDate >= nextCheckAt) {
+    return canRunReadOnlyCheck(
+      rowType,
+      target,
+      lastCheckedAt,
+      config.DNS_POLL_INTERVAL_SECONDS
+    );
+  }
+
+  if (hasStoredMissing && !nextCheckAt) {
+    return canRunReadOnlyCheck(rowType, target, lastCheckedAt);
+  }
+
+  if (!hasStoredMissing) {
+    return canRunReadOnlyCheck(rowType, target, lastCheckedAt);
+  }
+
+  return false;
+}
+
+async function sendActiveNotification(row, rowType, payload) {
+  try {
+    await mailer.sendStatusChange({
+      id: row.id,
+      type: rowType,
+      target: row.target,
+      status: 'ACTIVE',
+      expires_at: row.expires_at,
+      last_result: payload
+    });
+  } catch (err) {
+    log(`Failed to send ACTIVE email for ${rowType} ${row.target}: ${err.message}`);
+  }
+}
+
+async function persistCheckResult(row, rowType, check) {
+  const checkedAt = now();
+  const nextCheckAt = addSeconds(checkedAt, config.DNS_POLL_INTERVAL_SECONDS);
+  const { payload, json } = buildResultPayload(check, checkedAt, nextCheckAt);
+
+  const updateResult = await db.query(
+    "UPDATE dns_requests SET last_checked_at = ?, next_check_at = ?, last_check_result_json = ?, updated_at = NOW() WHERE id = ? AND status = 'PENDING'",
+    [checkedAt, nextCheckAt, json, row.id]
+  );
+
+  if (!updateResult || updateResult.affectedRows === 0) {
+    const refreshedRows = await db.query('SELECT * FROM dns_requests WHERE id = ?', [row.id]);
+    if (refreshedRows.length > 0) {
+      Object.assign(row, refreshedRows[0]);
+    }
+    return payload;
+  }
+
+  row.last_checked_at = checkedAt;
+  row.next_check_at = nextCheckAt;
+  row.last_check_result_json = json;
+
+  if (check.ok) {
+    const statusResult = await db.query(
+      "UPDATE dns_requests SET status = ?, activated_at = ?, updated_at = NOW() WHERE id = ? AND status = 'PENDING'",
+      ['ACTIVE', checkedAt, row.id]
+    );
+
+    if (statusResult && statusResult.affectedRows > 0) {
+      row.status = 'ACTIVE';
+      row.activated_at = checkedAt;
+      log(`Status updated for ${rowType} ${row.target}: ACTIVE`);
+      await sendActiveNotification(row, rowType, payload);
+      await markDomainAsActive(row.target);
+    } else {
+      const refreshedRows = await db.query('SELECT * FROM dns_requests WHERE id = ?', [row.id]);
+      if (refreshedRows.length > 0) {
+        Object.assign(row, refreshedRows[0]);
+      }
     }
   }
 
-  const lastCheckedAt = row.last_checked_at ? new Date(row.last_checked_at) : null;
-  if (!canRunReadOnlyCheck(rowType, target, lastCheckedAt)) {
-    return fallbackMissing(rowType, target);
+  return payload;
+}
+
+async function getMissingForRow(row, target) {
+  if (!row) return null;
+  const rowType = typeof row.type === 'string' ? row.type.toUpperCase() : '';
+  const storedMissing = getStoredMissingForRow(row, rowType, target);
+  const hasStoredMissing = storedMissing !== null;
+
+  if (!shouldRefreshRow(row, rowType, target, hasStoredMissing)) {
+    return storedMissing || fallbackMissing(rowType, target);
   }
+
   try {
     const check = await checkByType(rowType, target);
+    await persistCheckResult(row, rowType, check);
     return ensureUnifiedMissing(rowType, check.missing, target);
   } catch (err) {
     log(`Read-only DNS check failed for ${rowType} ${target}: ${err.message}`);
-    return fallbackMissing(rowType, target);
+    return storedMissing || fallbackMissing(rowType, target);
   }
 }
 

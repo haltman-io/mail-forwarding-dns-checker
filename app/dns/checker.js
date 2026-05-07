@@ -269,7 +269,7 @@ async function checkUi(target) {
   const cnameChainResolution = authorizedCnameIps.length > 0
     ? await resolveCnameChainToAuthorizedIp(apexName, authorizedCnameIps, config.UI_CNAME_MAX_CHAIN_DEPTH)
     : null;
-  const cnameOk = cnameChainResolution ? cnameChainResolution.ok : directCnameOk;
+  const cnameOk = directCnameOk || (cnameChainResolution ? cnameChainResolution.ok : false);
 
   const cnameMeta = capAndSanitizeHosts(cnameRecords);
   const cnameTruncated = cnameMeta.truncated || cnameMeta.valueTruncated;
@@ -290,7 +290,7 @@ async function checkUi(target) {
   ];
 
   const snapshot = {
-    cname_validation_mode: cnameChainResolution ? 'authorized_ip_chain' : 'expected_cname',
+    cname_validation_mode: cnameChainResolution ? 'expected_cname_or_authorized_ip_chain' : 'expected_cname',
     cname: cnameMeta.values,
     cname_count: cnameMeta.total,
     cname_truncated: cnameTruncated

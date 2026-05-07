@@ -78,9 +78,9 @@ If invalid: `400` with a technical error message.
 
 ### UI Requirements
 For the apex domain (`example.com`):
-1. CNAME record for `example.com` must satisfy:
+1. CNAME record for `example.com` must satisfy either:
    - `UI_CNAME_EXPECTED` (default `forward.haltman.io`), or
-   - if `UI_CNAME_AUTHORIZED_IPS` is set, the CNAME chain must resolve to one of those IPs.
+   - if `UI_CNAME_AUTHORIZED_IPS` is set, a CNAME chain resolving to one of those IPs.
 
 ### Error Responses
 - `400` invalid input
@@ -207,9 +207,10 @@ x-api-key: <CHECKDNS_TOKEN>
 
 ### Notes
 - If no UI or EMAIL row exists for that target: `404` with `{ "error": "not_found", "target": "example.com" }`.
-- If no prior DNS check exists, the endpoint may perform a **single read-only DNS check** but only if:
+- If no prior DNS check exists, the endpoint may perform and store a **single DNS check** but only if:
   - `last_checked_at` is older than `CHECKDNS_MIN_INTERVAL_SECONDS`, and
   - it hasn’t checked recently for that target and row type in memory.
+- If a `PENDING` row already has a result but `next_check_at` has passed, the endpoint performs one fresh DNS check for that row type, stores the result, and marks the row `ACTIVE` when its DNS requirements are satisfied.
 - If throttled, it returns a fallback “missing” list with empty `found`.
 
 ### overall_status

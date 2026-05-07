@@ -67,14 +67,15 @@ curl http://localhost:3000/api/checkdns/example.com
 
 ## /api/checkdns/:target
 
-- Read-only endpoint for polling UI and/or EMAIL validation for the target.
+- Polling endpoint for UI and/or EMAIL validation for the target.
 - Returns the existing `ui` and `email` records and their missing items.
-- If a row exists but has no `last_check_result_json` yet, the endpoint performs a single read-only DNS lookup for that row type to return a best-effort `missing` list. It does **not** create requests or start jobs.
+- If a row exists but has no `last_check_result_json` yet, the endpoint performs a single DNS lookup for that row type, stores the result, and returns a best-effort `missing` list. It does **not** create requests or start jobs.
+- If a `PENDING` row has an existing result but `next_check_at` has already passed, the endpoint rechecks DNS once for that row type, stores the fresh result, and marks that row `ACTIVE` when its requirements are satisfied.
 
 ## What ACTIVE Means
 
 - UI: The target domain satisfies:
-  - CNAME record for `<target>` matching `UI_CNAME_EXPECTED` (or resolving to `UI_CNAME_AUTHORIZED_IPS` when set)
+  - CNAME record for `<target>` matching `UI_CNAME_EXPECTED` or resolving to `UI_CNAME_AUTHORIZED_IPS` when set
 - EMAIL: The target domain satisfies **all** of:
   - MX record with `EMAIL_MX_EXPECTED_HOST` and `EMAIL_MX_EXPECTED_PRIORITY`
   - SPF TXT record exactly matching `EMAIL_SPF_EXPECTED`

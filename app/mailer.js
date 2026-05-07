@@ -37,7 +37,7 @@ function buildUiCriteriaText() {
     ? config.UI_CNAME_AUTHORIZED_IPS.filter(Boolean)
     : [];
   const cnameRule = authorizedCnameIps.length > 0
-    ? `- CNAME chain must resolve to authorized IP(s): ${sanitizeForLogAndEmail(authorizedCnameIps.join(', '), 500)}`
+    ? `- CNAME must include ${sanitizeForLogAndEmail(config.UI_CNAME_EXPECTED, 200)} or resolve to authorized IP(s): ${sanitizeForLogAndEmail(authorizedCnameIps.join(', '), 500)}`
     : `- CNAME must include: ${sanitizeForLogAndEmail(config.UI_CNAME_EXPECTED, 200)}`;
 
   return [
