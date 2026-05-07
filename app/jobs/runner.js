@@ -1,6 +1,6 @@
 const config = require('../config');
 const db = require('../db');
-const { checkEmail } = require('../dns/checker');
+const { checkByType } = require('../dns/checker');
 const mailer = require('../mailer');
 const { now, addSeconds, log } = require('../util/time');
 const { buildResultPayload } = require('../util/result');
@@ -130,7 +130,7 @@ async function runCheck(requestId, key) {
       return;
     }
 
-    const check = await checkEmail(row.target);
+    const check = await checkByType(row.type, row.target);
     const nextCheckAt = addSeconds(nowDate, config.DNS_POLL_INTERVAL_SECONDS);
     const { payload, json } = buildResultPayload(check, nowDate, nextCheckAt);
 

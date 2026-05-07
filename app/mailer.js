@@ -32,7 +32,7 @@ async function sendAdminMail(subject, text) {
   });
 }
 
-function buildCriteriaText() {
+function buildUiCriteriaText() {
   const authorizedCnameIps = Array.isArray(config.UI_CNAME_AUTHORIZED_IPS)
     ? config.UI_CNAME_AUTHORIZED_IPS.filter(Boolean)
     : [];
@@ -41,12 +41,26 @@ function buildCriteriaText() {
     : `- CNAME must include: ${sanitizeForLogAndEmail(config.UI_CNAME_EXPECTED, 200)}`;
 
   return [
+    'UI DNS requirements:',
+    cnameRule
+  ].join('\n');
+}
+
+function buildEmailCriteriaText() {
+  return [
     'Email forwarding DNS requirements:',
-    cnameRule,
     `- MX must include: ${sanitizeForLogAndEmail(config.EMAIL_MX_EXPECTED_HOST, 200)} priority ${sanitizeForLogAndEmail(config.EMAIL_MX_EXPECTED_PRIORITY, 50)}`,
     `- SPF TXT must exactly match: ${sanitizeForLogAndEmail(config.EMAIL_SPF_EXPECTED, 200)}`,
     `- DMARC TXT must exactly match: ${sanitizeForLogAndEmail(config.EMAIL_DMARC_EXPECTED, 200)}`,
     `- DKIM CNAME ${sanitizeForLogAndEmail(config.EMAIL_DKIM_SELECTOR, 100)}._domainkey.<target> must include: ${sanitizeForLogAndEmail(config.EMAIL_DKIM_CNAME_EXPECTED, 255)}`
+  ].join('\n');
+}
+
+function buildCriteriaText(type) {
+  if (type === 'UI') return buildUiCriteriaText();
+
+  return [
+    buildEmailCriteriaText()
   ].join('\n');
 }
 
@@ -61,7 +75,7 @@ async function sendRequestCreated(details) {
     `timestamp: ${sanitizeForLogAndEmail(toIso(now()), 50)}`,
     `expires_at: ${sanitizeForLogAndEmail(toIso(details.expires_at), 50)}`,
     '',
-    buildCriteriaText()
+    buildCriteriaText(details.type)
   ];
 
   const subject = `[DNS] Request created: ${sanitizeForLogAndEmail(details.type, 50)} ${sanitizeForLogAndEmail(details.target, 100)}`;

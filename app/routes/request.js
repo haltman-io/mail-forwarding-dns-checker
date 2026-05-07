@@ -3,7 +3,7 @@ const db = require('../db');
 const config = require('../config');
 const { log, now, addHours, addSeconds } = require('../util/time');
 const { extractTargetFromBody } = require('../util/validators');
-const { checkEmail } = require('../dns/checker');
+const { checkByType } = require('../dns/checker');
 const jobs = require('../jobs/runner');
 const mailer = require('../mailer');
 const { buildResultPayload } = require('../util/result');
@@ -48,7 +48,7 @@ async function runImmediateCheck(row) {
   const nowDate = now();
   const nextCheckAt = addSeconds(nowDate, config.DNS_POLL_INTERVAL_SECONDS);
 
-  const check = await checkEmail(row.target);
+  const check = await checkByType(row.type, row.target);
 
   const { payload, json } = buildResultPayload(check, nowDate, nextCheckAt);
 
@@ -151,10 +151,7 @@ async function handleRequest(type, req, res, next) {
   }
 }
 
-router.post('/request/ui', (_req, res) => res.status(410).json({
-  error: 'endpoint_removed',
-  message: 'Use /request/email. /request/ui is no longer supported.'
-}));
+router.post('/request/ui', (req, res, next) => handleRequest('UI', req, res, next));
 router.post('/request/email', (req, res, next) => handleRequest('EMAIL', req, res, next));
 
 module.exports = router;

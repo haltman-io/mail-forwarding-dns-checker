@@ -3,7 +3,7 @@ const db = require('../db');
 const config = require('../config');
 const { normalizeTarget } = require('../util/domain');
 const { toIso, log } = require('../util/time');
-const { checkEmail } = require('../dns/checker');
+const { checkByType } = require('../dns/checker');
 
 const router = express.Router();
 const readOnlyChecks = new Map();
@@ -47,53 +47,63 @@ function withMissingNames(missing, target) {
   });
 }
 
-function fallbackMissing(target) {
+function fallbackMissing(type, target) {
+  const normalizedType = typeof type === 'string' ? type.toUpperCase() : '';
   const expectedCnameIps = Array.isArray(config.UI_CNAME_AUTHORIZED_IPS)
     ? config.UI_CNAME_AUTHORIZED_IPS
     : [];
-  return [
-    {
-      key: 'CNAME',
-      type: 'CNAME',
-      name: target,
-      expected: config.UI_CNAME_EXPECTED,
-      found: [],
-      ok: false,
-      expected_ips: expectedCnameIps.length > 0 ? expectedCnameIps : undefined
-    },
-    {
-      key: 'MX',
-      type: 'MX',
-      name: target,
-      expected: { host: config.EMAIL_MX_EXPECTED_HOST, priority: config.EMAIL_MX_EXPECTED_PRIORITY },
-      found: [],
-      ok: false
-    },
-    {
-      key: 'SPF',
-      type: 'TXT',
-      name: target,
-      expected: config.EMAIL_SPF_EXPECTED,
-      found: [],
-      ok: false
-    },
-    {
-      key: 'DMARC',
-      type: 'TXT',
-      name: `_dmarc.${target}`,
-      expected: config.EMAIL_DMARC_EXPECTED,
-      found: [],
-      ok: false
-    },
-    {
-      key: 'DKIM',
-      type: 'CNAME',
-      name: `${config.EMAIL_DKIM_SELECTOR}._domainkey.${target}`,
-      expected: config.EMAIL_DKIM_CNAME_EXPECTED,
-      found: [],
-      ok: false
-    }
-  ];
+  if (normalizedType === 'UI') {
+    return [
+      {
+        key: 'CNAME',
+        type: 'CNAME',
+        name: target,
+        expected: config.UI_CNAME_EXPECTED,
+        found: [],
+        ok: false,
+        expected_ips: expectedCnameIps.length > 0 ? expectedCnameIps : undefined
+      }
+    ];
+  }
+
+  if (normalizedType === 'EMAIL') {
+    return [
+      {
+        key: 'MX',
+        type: 'MX',
+        name: target,
+        expected: { host: config.EMAIL_MX_EXPECTED_HOST, priority: config.EMAIL_MX_EXPECTED_PRIORITY },
+        found: [],
+        ok: false
+      },
+      {
+        key: 'SPF',
+        type: 'TXT',
+        name: target,
+        expected: config.EMAIL_SPF_EXPECTED,
+        found: [],
+        ok: false
+      },
+      {
+        key: 'DMARC',
+        type: 'TXT',
+        name: `_dmarc.${target}`,
+        expected: config.EMAIL_DMARC_EXPECTED,
+        found: [],
+        ok: false
+      },
+      {
+        key: 'DKIM',
+        type: 'CNAME',
+        name: `${config.EMAIL_DKIM_SELECTOR}._domainkey.${target}`,
+        expected: config.EMAIL_DKIM_CNAME_EXPECTED,
+        found: [],
+        ok: false
+      }
+    ];
+  }
+
+  return [];
 }
 
 function canRunReadOnlyCheck(type, target, lastCheckedAt) {
@@ -122,9 +132,18 @@ function canRunReadOnlyCheck(type, target, lastCheckedAt) {
   return true;
 }
 
-function ensureUnifiedMissing(missing, target) {
+function orderedMissingKeys(type) {
+  const normalizedType = typeof type === 'string' ? type.toUpperCase() : '';
+  if (normalizedType === 'UI') return ['CNAME'];
+  if (normalizedType === 'EMAIL') return ['MX', 'SPF', 'DMARC', 'DKIM'];
+  return [];
+}
+
+function ensureUnifiedMissing(type, missing, target) {
   const base = withMissingNames(missing, target);
-  const fallbackByKey = new Map(fallbackMissing(target).map((item) => [String(item.key).toUpperCase(), item]));
+  const fallbackByKey = new Map(
+    fallbackMissing(type, target).map((item) => [String(item.key).toUpperCase(), item])
+  );
   const foundByKey = new Map();
 
   if (Array.isArray(base)) {
@@ -136,33 +155,45 @@ function ensureUnifiedMissing(missing, target) {
     }
   }
 
-  return ['CNAME', 'MX', 'SPF', 'DMARC', 'DKIM'].map(
+  return orderedMissingKeys(type).map(
     (key) => foundByKey.get(key) || fallbackByKey.get(key)
   );
 }
 
 async function getMissingForRow(row, target) {
   if (!row) return null;
+  const rowType = typeof row.type === 'string' ? row.type.toUpperCase() : '';
+
   if (row.last_check_result_json) {
     try {
       const parsed = JSON.parse(row.last_check_result_json);
-      if (parsed && parsed.missing) return ensureUnifiedMissing(parsed.missing, target);
+      if (parsed && parsed.missing) return ensureUnifiedMissing(rowType, parsed.missing, target);
     } catch (err) {
-      log(`Failed to parse last_check_result_json for EMAIL ${target}: ${err.message}`);
+      log(`Failed to parse last_check_result_json for ${rowType} ${target}: ${err.message}`);
     }
   }
 
   const lastCheckedAt = row.last_checked_at ? new Date(row.last_checked_at) : null;
-  if (!canRunReadOnlyCheck('EMAIL', target, lastCheckedAt)) {
-    return fallbackMissing(target);
+  if (!canRunReadOnlyCheck(rowType, target, lastCheckedAt)) {
+    return fallbackMissing(rowType, target);
   }
   try {
-    const check = await checkEmail(target);
-    return ensureUnifiedMissing(check.missing, target);
+    const check = await checkByType(rowType, target);
+    return ensureUnifiedMissing(rowType, check.missing, target);
   } catch (err) {
-    log(`Read-only DNS check failed for EMAIL ${target}: ${err.message}`);
-    return fallbackMissing(target);
+    log(`Read-only DNS check failed for ${rowType} ${target}: ${err.message}`);
+    return fallbackMissing(rowType, target);
   }
+}
+
+function overallStatusForRows(rows) {
+  const statuses = rows.map((row) => row && row.status).filter(Boolean);
+  if (statuses.length === 0) return 'NONE';
+  if (statuses.includes('PENDING')) return 'PENDING';
+  if (statuses.includes('FAILED')) return 'FAILED';
+  if (statuses.includes('EXPIRED')) return 'EXPIRED';
+  if (statuses.every((status) => status === 'ACTIVE')) return 'ACTIVE';
+  return statuses[0];
 }
 
 function buildRowResponse(row, missing) {
@@ -200,14 +231,16 @@ router.get('/api/checkdns/:target', async (req, res, next) => {
       return res.status(404).json({ error: 'not_found', target: normalized });
     }
 
+    const uiRow = rows.find((row) => row.type === 'UI') || null;
     const emailRow = rows.find((row) => row.type === 'EMAIL') || null;
-    if (!emailRow) {
+    if (!uiRow && !emailRow) {
       return res.status(404).json({ error: 'not_found', target: normalized });
     }
+    const uiMissing = await getMissingForRow(uiRow, normalized);
     const emailMissing = await getMissingForRow(emailRow, normalized);
 
-    const overallStatus = emailRow ? emailRow.status : 'NONE';
-    const scopedRows = emailRow ? [emailRow] : [];
+    const scopedRows = [uiRow, emailRow].filter(Boolean);
+    const overallStatus = overallStatusForRows(scopedRows);
     const expiresAtMin = minDate(scopedRows.map((row) => row.expires_at));
     const lastCheckedMax = maxDate(scopedRows.map((row) => row.last_checked_at));
     const nextCheckMin = minDate(scopedRows.map((row) => row.next_check_at));
@@ -216,14 +249,14 @@ router.get('/api/checkdns/:target', async (req, res, next) => {
       target: normalized,
       normalized_target: normalized,
       summary: {
-        has_ui: false,
+        has_ui: Boolean(uiRow),
         has_email: Boolean(emailRow),
         overall_status: overallStatus,
         expires_at_min: toIso(expiresAtMin),
         last_checked_at_max: toIso(lastCheckedMax),
         next_check_at_min: toIso(nextCheckMin)
       },
-      ui: null,
+      ui: buildRowResponse(uiRow, uiMissing),
       email: buildRowResponse(emailRow, emailMissing)
     });
   } catch (err) {

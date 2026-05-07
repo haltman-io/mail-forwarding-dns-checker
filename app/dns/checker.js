@@ -260,7 +260,72 @@ function capAndSanitizeTxt(rawTxt) {
 }
 
 async function checkUi(target) {
-  return checkEmail(target);
+  const apexName = normalizeHost(target);
+  const expectedCname = normalizeHost(config.UI_CNAME_EXPECTED);
+  const authorizedCnameIps = (config.UI_CNAME_AUTHORIZED_IPS || []).map(normalizeIp).filter(Boolean);
+
+  const cnameRecords = await resolveCnameSafe(apexName);
+  const directCnameOk = cnameRecords.some((record) => normalizeHost(record) === expectedCname);
+  const cnameChainResolution = authorizedCnameIps.length > 0
+    ? await resolveCnameChainToAuthorizedIp(apexName, authorizedCnameIps, config.UI_CNAME_MAX_CHAIN_DEPTH)
+    : null;
+  const cnameOk = cnameChainResolution ? cnameChainResolution.ok : directCnameOk;
+
+  const cnameMeta = capAndSanitizeHosts(cnameRecords);
+  const cnameTruncated = cnameMeta.truncated || cnameMeta.valueTruncated;
+
+  const missing = [
+    {
+      key: 'CNAME',
+      type: 'CNAME',
+      name: apexName,
+      expected: expectedCname,
+      found: cnameMeta.values,
+      ok: cnameOk,
+      found_truncated: cnameTruncated,
+      expected_ips: authorizedCnameIps.length > 0 ? authorizedCnameIps : undefined,
+      found_ips: cnameChainResolution ? cnameChainResolution.resolvedIps || [] : undefined,
+      chain_reason: cnameChainResolution ? cnameChainResolution.reason : undefined
+    }
+  ];
+
+  const snapshot = {
+    cname_validation_mode: cnameChainResolution ? 'authorized_ip_chain' : 'expected_cname',
+    cname: cnameMeta.values,
+    cname_count: cnameMeta.total,
+    cname_truncated: cnameTruncated
+  };
+
+  if (authorizedCnameIps.length > 0) {
+    const authorizedIpsMeta = capAndSanitizeHosts(authorizedCnameIps);
+    snapshot.cname_authorized_ips = authorizedIpsMeta.values;
+    snapshot.cname_authorized_ips_count = authorizedIpsMeta.total;
+    snapshot.cname_authorized_ips_truncated = authorizedIpsMeta.truncated || authorizedIpsMeta.valueTruncated;
+  }
+
+  if (cnameChainResolution) {
+    const chainMeta = capAndSanitizeHosts(cnameChainResolution.chain || []);
+    const resolvedIpsMeta = capAndSanitizeHosts(cnameChainResolution.resolvedIps || []);
+    snapshot.cname_chain = chainMeta.values;
+    snapshot.cname_chain_count = chainMeta.total;
+    snapshot.cname_chain_truncated = chainMeta.truncated || chainMeta.valueTruncated;
+    snapshot.cname_chain_reason = cnameChainResolution.reason;
+    snapshot.cname_chain_max_depth = config.UI_CNAME_MAX_CHAIN_DEPTH;
+    snapshot.cname_chain_reached_max_depth = Boolean(cnameChainResolution.reachedMaxDepth);
+    snapshot.cname_chain_loop_detected = Boolean(cnameChainResolution.loopDetected);
+    snapshot.cname_chain_resolved_ips = resolvedIpsMeta.values;
+    snapshot.cname_chain_resolved_ips_count = resolvedIpsMeta.total;
+    snapshot.cname_chain_resolved_ips_truncated =
+      resolvedIpsMeta.truncated || resolvedIpsMeta.valueTruncated;
+  }
+
+  if (cnameMeta.hash) snapshot.cname_hash = cnameMeta.hash;
+
+  return {
+    ok: cnameOk,
+    missing,
+    snapshot
+  };
 }
 
 async function checkEmail(target) {
@@ -268,25 +333,17 @@ async function checkEmail(target) {
   const dkimSelector = normalizeHost(config.EMAIL_DKIM_SELECTOR);
   const dkimName = `${dkimSelector}._domainkey.${apexName}`;
   const dmarcName = `_dmarc.${apexName}`;
-  const expectedCname = normalizeHost(config.UI_CNAME_EXPECTED);
   const expectedDkimCname = normalizeHost(config.EMAIL_DKIM_CNAME_EXPECTED);
-  const authorizedCnameIps = (config.UI_CNAME_AUTHORIZED_IPS || []).map(normalizeIp).filter(Boolean);
   const expectedMxHost = normalizeHost(config.EMAIL_MX_EXPECTED_HOST);
   const expectedMxPriority = config.EMAIL_MX_EXPECTED_PRIORITY;
   const expectedSpf = config.EMAIL_SPF_EXPECTED;
   const expectedDmarc = config.EMAIL_DMARC_EXPECTED;
 
-  const cnameRecords = await resolveCnameSafe(apexName);
   const dkimCnameRecords = await resolveCnameSafe(dkimName);
   const mxRecords = await resolveMxSafe(apexName);
   const txtApex = await resolveTxtSafe(apexName);
   const txtDmarc = await resolveTxtSafe(dmarcName);
 
-  const directCnameOk = cnameRecords.some((record) => normalizeHost(record) === expectedCname);
-  const cnameChainResolution = authorizedCnameIps.length > 0
-    ? await resolveCnameChainToAuthorizedIp(apexName, authorizedCnameIps, config.UI_CNAME_MAX_CHAIN_DEPTH)
-    : null;
-  const cnameOk = cnameChainResolution ? cnameChainResolution.ok : directCnameOk;
   const mxOk = mxRecords.some(
     (rec) => rec.exchange === expectedMxHost && rec.priority === expectedMxPriority
   );
@@ -294,35 +351,17 @@ async function checkEmail(target) {
   const dmarcOk = isExactDmarcMatch(txtDmarc, expectedDmarc);
   const dkimOk = dkimCnameRecords.some((record) => normalizeHost(record) === expectedDkimCname);
 
-  const cnameMeta = capAndSanitizeHosts(cnameRecords);
   const dkimCnameMeta = capAndSanitizeHosts(dkimCnameRecords);
   const mxMeta = capAndSanitizeMx(mxRecords);
   const txtApexMeta = capAndSanitizeTxt(txtApex);
   const txtDmarcMeta = capAndSanitizeTxt(txtDmarc);
 
-  const cnameTruncated = cnameMeta.truncated || cnameMeta.valueTruncated;
   const dkimCnameTruncated = dkimCnameMeta.truncated || dkimCnameMeta.valueTruncated;
   const mxTruncated = mxMeta.truncated || mxMeta.valueTruncated;
   const spfTruncated = txtApexMeta.truncated || txtApexMeta.valueTruncated;
   const dmarcTruncated = txtDmarcMeta.truncated || txtDmarcMeta.valueTruncated;
 
-  const cnameEntry = {
-    key: 'CNAME',
-    type: 'CNAME',
-    name: apexName,
-    expected: expectedCname,
-    found: cnameMeta.values,
-    ok: cnameOk,
-    found_truncated: cnameTruncated,
-    expected_ips: authorizedCnameIps.length > 0 ? authorizedCnameIps : undefined
-  };
-  if (cnameChainResolution) {
-    cnameEntry.found_ips = cnameChainResolution.resolvedIps || [];
-    cnameEntry.chain_reason = cnameChainResolution.reason;
-  }
-
   const missing = [
-    cnameEntry,
     {
       key: 'MX',
       type: 'MX',
@@ -362,10 +401,6 @@ async function checkEmail(target) {
   ];
 
   const snapshot = {
-    cname_validation_mode: cnameChainResolution ? 'authorized_ip_chain' : 'expected_cname',
-    cname: cnameMeta.values,
-    cname_count: cnameMeta.total,
-    cname_truncated: cnameTruncated,
     mx: mxMeta.values,
     mx_count: mxMeta.total,
     mx_truncated: mxTruncated,
@@ -380,43 +415,29 @@ async function checkEmail(target) {
     dkim_cname_truncated: dkimCnameTruncated
   };
 
-  if (authorizedCnameIps.length > 0) {
-    const authorizedIpsMeta = capAndSanitizeHosts(authorizedCnameIps);
-    snapshot.cname_authorized_ips = authorizedIpsMeta.values;
-    snapshot.cname_authorized_ips_count = authorizedIpsMeta.total;
-    snapshot.cname_authorized_ips_truncated = authorizedIpsMeta.truncated || authorizedIpsMeta.valueTruncated;
-  }
-
-  if (cnameChainResolution) {
-    const chainMeta = capAndSanitizeHosts(cnameChainResolution.chain || []);
-    const resolvedIpsMeta = capAndSanitizeHosts(cnameChainResolution.resolvedIps || []);
-    snapshot.cname_chain = chainMeta.values;
-    snapshot.cname_chain_count = chainMeta.total;
-    snapshot.cname_chain_truncated = chainMeta.truncated || chainMeta.valueTruncated;
-    snapshot.cname_chain_reason = cnameChainResolution.reason;
-    snapshot.cname_chain_max_depth = config.UI_CNAME_MAX_CHAIN_DEPTH;
-    snapshot.cname_chain_reached_max_depth = Boolean(cnameChainResolution.reachedMaxDepth);
-    snapshot.cname_chain_loop_detected = Boolean(cnameChainResolution.loopDetected);
-    snapshot.cname_chain_resolved_ips = resolvedIpsMeta.values;
-    snapshot.cname_chain_resolved_ips_count = resolvedIpsMeta.total;
-    snapshot.cname_chain_resolved_ips_truncated =
-      resolvedIpsMeta.truncated || resolvedIpsMeta.valueTruncated;
-  }
-
-  if (cnameMeta.hash) snapshot.cname_hash = cnameMeta.hash;
   if (dkimCnameMeta.hash) snapshot.dkim_cname_hash = dkimCnameMeta.hash;
   if (mxMeta.hash) snapshot.mx_hash = mxMeta.hash;
   if (txtApexMeta.hash) snapshot.txt_apex_hash = txtApexMeta.hash;
   if (txtDmarcMeta.hash) snapshot.txt_dmarc_hash = txtDmarcMeta.hash;
 
   return {
-    ok: cnameOk && mxOk && spfOk && dmarcOk && dkimOk,
+    ok: mxOk && spfOk && dmarcOk && dkimOk,
     missing,
     snapshot
   };
 }
 
+async function checkByType(type, target) {
+  if (type === 'UI') return checkUi(target);
+  if (type === 'EMAIL') return checkEmail(target);
+
+  const err = new Error(`Unsupported DNS check type: ${type}`);
+  err.code = 'UNSUPPORTED_DNS_CHECK_TYPE';
+  throw err;
+}
+
 module.exports = {
+  checkByType,
   checkUi,
   checkEmail
 };

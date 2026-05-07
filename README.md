@@ -39,10 +39,14 @@ npm run sanity:domain
 
 ## API
 
-### Deprecated endpoint
-`POST /request/ui` is disabled and returns `410 Gone`. Use `POST /request/email`.
+### Request UI validation (CNAME only)
+```
+curl -X POST http://localhost:3000/request/ui \
+  -H "Content-Type: application/json" \
+  -d '{"target":"example.com"}'
+```
 
-### Request Email forwarding validation (CNAME + MX + SPF + DMARC + DKIM)
+### Request Email forwarding validation (MX + SPF + DMARC + DKIM)
 ```
 curl -X POST http://localhost:3000/request/email \
   -H "Content-Type: application/json" \
@@ -63,14 +67,15 @@ curl http://localhost:3000/api/checkdns/example.com
 
 ## /api/checkdns/:target
 
-- Read-only endpoint for polling EMAIL validation.
-- Returns the EMAIL record and its missing items.
-- If a row exists but has no `last_check_result_json` yet, the endpoint performs a single read-only DNS lookup to return a best-effort `missing` list. It does **not** create requests or start jobs.
+- Read-only endpoint for polling UI and/or EMAIL validation for the target.
+- Returns the existing `ui` and `email` records and their missing items.
+- If a row exists but has no `last_check_result_json` yet, the endpoint performs a single read-only DNS lookup for that row type to return a best-effort `missing` list. It does **not** create requests or start jobs.
 
 ## What ACTIVE Means
 
-- EMAIL: The target domain satisfies **all** of:
+- UI: The target domain satisfies:
   - CNAME record for `<target>` matching `UI_CNAME_EXPECTED` (or resolving to `UI_CNAME_AUTHORIZED_IPS` when set)
+- EMAIL: The target domain satisfies **all** of:
   - MX record with `EMAIL_MX_EXPECTED_HOST` and `EMAIL_MX_EXPECTED_PRIORITY`
   - SPF TXT record exactly matching `EMAIL_SPF_EXPECTED`
   - DMARC TXT record at `_dmarc.<target>` exactly matching `EMAIL_DMARC_EXPECTED`
