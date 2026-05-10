@@ -3,7 +3,7 @@ const db = require('../db');
 const config = require('../config');
 const { normalizeTarget } = require('../util/domain');
 const { toIso, log, now, addSeconds } = require('../util/time');
-const { checkByType } = require('../dns/checker');
+const { checkByType, describeCheckResult } = require('../dns/checker');
 const { buildResultPayload } = require('../util/result');
 const mailer = require('../mailer');
 const { markDomainAsActive } = require('../util/domain-activation');
@@ -290,9 +290,14 @@ async function getMissingForRow(row, target) {
   try {
     const check = await checkByType(rowType, target);
     await persistCheckResult(row, rowType, check);
+    log(`Read-only DNS check completed for ${rowType}:${target} (${describeCheckResult(check)})`);
     return ensureUnifiedMissing(rowType, check.missing, target);
   } catch (err) {
-    log(`Read-only DNS check failed for ${rowType} ${target}: ${err.message}`);
+    log(`Read-only DNS check failed for ${rowType} ${target}: ${err.message}`, {
+      code: err.code || 'ERROR',
+      dns: err.dns || null,
+      stack: err.stack
+    });
     return storedMissing || fallbackMissing(rowType, target);
   }
 }

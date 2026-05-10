@@ -3,11 +3,12 @@ const db = require('../db');
 const config = require('../config');
 const { log, now, addHours, addSeconds } = require('../util/time');
 const { extractTargetFromBody } = require('../util/validators');
-const { checkByType } = require('../dns/checker');
+const { checkByType, describeCheckResult } = require('../dns/checker');
 const jobs = require('../jobs/runner');
 const mailer = require('../mailer');
 const { buildResultPayload } = require('../util/result');
 const { markDomainAsActive } = require('../util/domain-activation');
+const { sanitizeForLogAndEmail } = require('../util/sanitize');
 
 const router = express.Router();
 
@@ -27,20 +28,51 @@ async function insertRequest(type, target) {
   };
 }
 
-async function enforceCooldown(target, type) {
-  if (config.TARGET_COOLDOWN_SECONDS <= 0) return;
+async function refreshExistingRequest(type, target) {
+  const expiresAt = addHours(now(), config.DNS_JOB_MAX_AGE_HOURS);
+  await db.query(
+    `UPDATE dns_requests
+     SET status = ?,
+         expires_at = ?,
+         activated_at = NULL,
+         fail_reason = NULL,
+         last_checked_at = NULL,
+         next_check_at = NULL,
+         last_check_result_json = NULL,
+         updated_at = NOW()
+     WHERE target = ? AND type = ?`,
+    ['PENDING', expiresAt, target, type]
+  );
+
   const rows = await db.query(
-    'SELECT created_at FROM dns_requests WHERE target = ? AND type = ? ORDER BY created_at DESC LIMIT 1',
+    'SELECT * FROM dns_requests WHERE target = ? AND type = ? LIMIT 1',
     [target, type]
   );
 
-  if (rows.length === 0) return;
-  const lastCreated = rows[0].created_at ? new Date(rows[0].created_at).getTime() : 0;
-  const nowMs = Date.now();
-  if (nowMs - lastCreated < config.TARGET_COOLDOWN_SECONDS * 1000) {
-    const err = new Error('target is in cooldown window');
-    err.status = 429;
+  if (rows.length === 0) {
+    const err = new Error(`Failed to reload refreshed request for ${type} ${target}`);
+    err.code = 'REQUEST_REFRESH_MISSING';
     throw err;
+  }
+
+  return rows[0];
+}
+
+async function createOrRefreshRequest(type, target) {
+  try {
+    return {
+      row: await insertRequest(type, target),
+      created: true
+    };
+  } catch (err) {
+    if (!err || err.code !== 'ER_DUP_ENTRY') {
+      throw err;
+    }
+
+    return {
+      row: await refreshExistingRequest(type, target),
+      created: false
+    };
   }
 }
 
@@ -56,6 +88,8 @@ async function runImmediateCheck(row) {
     'UPDATE dns_requests SET last_checked_at = ?, next_check_at = ?, last_check_result_json = ?, updated_at = NOW() WHERE id = ?',
     [nowDate, nextCheckAt, json, row.id]
   );
+
+  log(`Immediate DNS check completed for ${row.type}:${row.target} (${describeCheckResult(check)})`);
 
   if (check.ok) {
     const result = await db.query(
@@ -93,26 +127,9 @@ async function handleRequest(type, req, res, next) {
   try {
     const target = extractTargetFromBody(req.body);
 
-    const stats = jobs.getJobStats();
-    if (stats.active >= stats.max) {
-      return res.status(503).json({ error: 'server_busy', message: 'Too many active jobs' });
-    }
+    const { row, created } = await createOrRefreshRequest(type, target);
 
-    await enforceCooldown(target, type);
-
-    let row;
-    try {
-      row = await insertRequest(type, target);
-    } catch (err) {
-      if (err && err.code === 'ER_DUP_ENTRY') {
-        err.status = 409;
-        err.expose = true;
-        err.message = `Duplicate request for ${type} ${target}`;
-      }
-      throw err;
-    }
-
-    log(`Request created for ${type} ${target} (id=${row.id})`);
+    log(`Request ${created ? 'created' : 'refreshed'} for ${type} ${target} (id=${row.id})`);
 
     mailer.sendRequestCreated(row).catch((err) => {
       log(`Failed to send request email for ${type} ${target}: ${err.message}`);
@@ -122,7 +139,19 @@ async function handleRequest(type, req, res, next) {
     try {
       immediateResult = await runImmediateCheck(row);
     } catch (err) {
-      log(`Immediate DNS check failed for ${type} ${target}: ${err.message}`);
+      log(`Immediate DNS check failed for ${type} ${target}: ${err.message}`, {
+        code: err.code || 'ERROR',
+        stack: err.stack
+      });
+      try {
+        const reason = sanitizeForLogAndEmail(`Immediate DNS error: ${err.message}`, 500);
+        await db.query('UPDATE dns_requests SET fail_reason = ?, updated_at = NOW() WHERE id = ?', [
+          reason,
+          row.id
+        ]);
+      } catch (updateErr) {
+        log(`Failed to update immediate fail_reason for ${type} ${target}: ${updateErr.message}`);
+      }
     }
 
     const responseId = typeof row.id === 'bigint' ? Number(row.id) : row.id;

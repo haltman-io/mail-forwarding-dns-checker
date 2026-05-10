@@ -105,6 +105,10 @@ const config = {
   DNS_MAX_TXT_RECORDS: toInt(process.env.DNS_MAX_TXT_RECORDS || '50', 'DNS_MAX_TXT_RECORDS'),
   DNS_MAX_TXT_LENGTH: toInt(process.env.DNS_MAX_TXT_LENGTH || '512', 'DNS_MAX_TXT_LENGTH'),
   DNS_MAX_HOST_LENGTH: toInt(process.env.DNS_MAX_HOST_LENGTH || '253', 'DNS_MAX_HOST_LENGTH'),
+  DNS_STATUS_LOG_INTERVAL_SECONDS: Math.max(
+    0,
+    toInt(process.env.DNS_STATUS_LOG_INTERVAL_SECONDS || '300', 'DNS_STATUS_LOG_INTERVAL_SECONDS')
+  ),
   CHECKDNS_MIN_INTERVAL_SECONDS: toInt(
     process.env.CHECKDNS_MIN_INTERVAL_SECONDS || process.env.DNS_POLL_INTERVAL_SECONDS || '300',
     'CHECKDNS_MIN_INTERVAL_SECONDS'
@@ -113,7 +117,6 @@ const config = {
   MAX_ACTIVE_JOBS: maxActiveJobs,
   MAX_ACTIVE_JOBS_REQUESTED: maxActiveJobsRequested,
   RESUME_STARTUP_JITTER_MS: resumeStartupJitterMs,
-  TARGET_COOLDOWN_SECONDS: toInt(process.env.TARGET_COOLDOWN_SECONDS || '60', 'TARGET_COOLDOWN_SECONDS'),
   RESULT_JSON_MAX_BYTES: toInt(process.env.RESULT_JSON_MAX_BYTES || '20000', 'RESULT_JSON_MAX_BYTES'),
   EMAIL_BODY_MAX_LENGTH: toInt(process.env.EMAIL_BODY_MAX_LENGTH || '8000', 'EMAIL_BODY_MAX_LENGTH'),
   CHECKDNS_TOKEN: process.env.CHECKDNS_TOKEN ? process.env.CHECKDNS_TOKEN.trim() : '',
@@ -131,7 +134,7 @@ const config = {
     process.env.EMAIL_DKIM_CNAME_EXPECTED || 's1._domainkey.dkim.abin.lat'
   ).toLowerCase(),
   EMAIL_SPF_EXPECTED: process.env.EMAIL_SPF_EXPECTED || 'v=spf1 include:_spf.abin.lat mx -all',
-  EMAIL_DMARC_EXPECTED: process.env.EMAIL_DMARC_EXPECTED || 'v=DMARC1; p=none'
+  EMAIL_DMARC_EXPECTED: process.env.EMAIL_DMARC_EXPECTED || 'v=DMARC1; p=quarantine'
 };
 
 module.exports = config;

@@ -3,15 +3,13 @@ const { log } = require('./time');
 
 async function markDomainAsActive(target) {
   try {
-    await db.query('INSERT INTO domain (name, active) VALUES (?, ?)', [target, 1]);
-    log(`Domain inserted as active: ${target}`);
+    await db.query(
+      'INSERT INTO domain (name, active) VALUES (?, ?) ON DUPLICATE KEY UPDATE active = VALUES(active)',
+      [target, 1]
+    );
+    log(`Domain marked as active: ${target}`);
   } catch (err) {
-    if (err && err.code === 'ER_DUP_ENTRY') {
-      log(`Domain already active: ${target}`);
-      return;
-    }
-
-    log(`Failed to insert active domain ${target}: ${err.message}`);
+    log(`Failed to mark domain active ${target}: ${err.message}`);
   }
 }
 

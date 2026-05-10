@@ -38,10 +38,7 @@ If invalid: `400` with a technical error message.
 ## Rate Limiting & Throttles
 - Per-IP rate limiting: **60 requests/minute** (in-memory).
   - Exceeding returns: `429` with `{ "error": "rate_limited", "message": "Too many requests" }`.
-- Per-target cooldown: `TARGET_COOLDOWN_SECONDS` (default 60s).
-  - Returns `429` with `{ "error": "target is in cooldown window" }`.
-- Max active jobs: `MAX_ACTIVE_JOBS` (default 100).
-  - Returns `503` with `{ "error": "server_busy", "message": "Too many active jobs" }`.
+- Max active jobs: `MAX_ACTIVE_JOBS` caps concurrent background polling jobs. Extra pending jobs are queued.
 
 ---
 
@@ -56,6 +53,8 @@ If invalid: `400` with a technical error message.
 # 1) POST /request/ui
 
 **Purpose:** Start UI DNS validation.
+
+If the same target already has a UI validation row, the API refreshes that row instead of returning a duplicate error: it clears stale DNS results, resets the row to `PENDING`, extends `expires_at`, and immediately runs a fresh DNS check.
 
 ### Request Body
 ```json
@@ -84,10 +83,8 @@ For the apex domain (`example.com`):
 
 ### Error Responses
 - `400` invalid input
-- `409` duplicate (same `target` + `type`)
 - `415` missing/incorrect JSON content-type
-- `429` cooldown or rate limit
-- `503` too many active jobs
+- `429` rate limit
 - `500` internal error
 
 ---
@@ -95,6 +92,8 @@ For the apex domain (`example.com`):
 # 2) POST /request/email
 
 **Purpose:** Start email forwarding DNS validation.
+
+If the same target already has an EMAIL validation row, the API refreshes that row instead of returning a duplicate error: it clears stale DNS results, resets the row to `PENDING`, extends `expires_at`, and immediately runs a fresh DNS check.
 
 ### Request Body
 ```json
@@ -123,16 +122,14 @@ For the apex domain (`example.com`):
 2. TXT (SPF) must **exactly** match:
    - `EMAIL_SPF_EXPECTED` (default `v=spf1 include:_spf.abin.lat mx -all`)
 3. TXT (DMARC) at `_dmarc.example.com` must **exactly** match:
-   - `EMAIL_DMARC_EXPECTED` (default `v=DMARC1; p=none`)
+   - `EMAIL_DMARC_EXPECTED` (default `v=DMARC1; p=quarantine`)
 4. DKIM CNAME at `<EMAIL_DKIM_SELECTOR>._domainkey.example.com` must match:
    - `EMAIL_DKIM_CNAME_EXPECTED` (default `s1._domainkey.dkim.abin.lat`)
 
 ### Error Responses
 - `400` invalid input
-- `409` duplicate (same `target` + `type`)
 - `415` missing/incorrect JSON content-type
-- `429` cooldown or rate limit
-- `503` too many active jobs
+- `429` rate limit
 - `500` internal error
 
 ---
@@ -232,10 +229,7 @@ Examples:
 - `400` invalid JSON → `{ "error": "invalid_json" }`
 - `400` validation → `{ "error": "target must be a domain name without scheme" }`
 - `401` unauthorized → `{ "error": "unauthorized" }`
-- `409` duplicate → `{ "error": "Duplicate request for EMAIL example.com" }`
 - `429` rate limit → `{ "error": "rate_limited", "message": "Too many requests" }`
-- `429` cooldown → `{ "error": "target is in cooldown window" }`
-- `503` → `{ "error": "server_busy", "message": "Too many active jobs" }`
 - `500` → `{ "error": "internal_error" }`
 
 ---
@@ -276,7 +270,7 @@ Examples:
   },
   {
     "key": "DMARC",
-    "expected": "v=DMARC1; p=none",
+    "expected": "v=DMARC1; p=quarantine",
     "found": ["v=DMARC1; p=reject"],
     "ok": false,
     "found_truncated": false

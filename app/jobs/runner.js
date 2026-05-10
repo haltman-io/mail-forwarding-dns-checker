@@ -1,6 +1,6 @@
 const config = require('../config');
 const db = require('../db');
-const { checkByType } = require('../dns/checker');
+const { checkByType, describeCheckResult, getDnsResolverSummary } = require('../dns/checker');
 const mailer = require('../mailer');
 const { now, addSeconds, log } = require('../util/time');
 const { buildResultPayload } = require('../util/result');
@@ -10,6 +10,7 @@ const { markDomainAsActive } = require('../util/domain-activation');
 const jobs = new Map();
 const queue = [];
 const queuedKeys = new Set();
+let statusIntervalId = null;
 
 function getKey(type, target) {
   return `${type}:${target}`;
@@ -144,14 +145,18 @@ async function runCheck(requestId, key) {
       return;
     }
 
-    log(`DNS check completed for ${key} (ok=${check.ok})`);
+    log(`DNS check completed for ${key} (${describeCheckResult(check)})`);
 
     if (check.ok) {
       await updateStatus(row, 'ACTIVE', null, payload);
       stopJob(key);
     }
   } catch (err) {
-    log(`DNS check error for ${key}: ${err.message}`);
+    log(`DNS check error for ${key}: ${err.message}`, {
+      code: err.code || 'ERROR',
+      dns: err.dns || null,
+      stack: err.stack
+    });
     try {
       const reason = sanitizeForLogAndEmail(`Transient DNS error: ${err.message}`, 500);
       await db.query('UPDATE dns_requests SET fail_reason = ?, updated_at = NOW() WHERE id = ?', [
@@ -200,7 +205,10 @@ function startJob(row, options = {}) {
 
 function startForRequest(row, options = {}) {
   const key = getKey(row.type, row.target);
-  if (jobs.has(key)) return;
+  if (jobs.has(key)) {
+    log(`Job already running for ${key}`);
+    return;
+  }
 
   if (!canStartJob()) {
     enqueue(row, options);
@@ -238,8 +246,51 @@ function getJobStats() {
   };
 }
 
+function toCount(value) {
+  if (typeof value === 'bigint') return Number(value);
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+async function logStatusSummary() {
+  const rows = await db.query('SELECT status, COUNT(*) AS count FROM dns_requests GROUP BY status');
+  const counts = rows.reduce((acc, row) => {
+    acc[String(row.status || 'UNKNOWN')] = toCount(row.count);
+    return acc;
+  }, {});
+  const resolverSummary = getDnsResolverSummary();
+
+  log(
+    `DNS service status: active_jobs=${jobs.size} queued_jobs=${queue.length} max_jobs=${config.MAX_ACTIVE_JOBS} statuses=${JSON.stringify(counts)} dns_server_source=${resolverSummary.source} dns_servers=${resolverSummary.servers.join(',')}`
+  );
+}
+
+function startStatusReporter() {
+  if (statusIntervalId || config.DNS_STATUS_LOG_INTERVAL_SECONDS <= 0) return;
+
+  const intervalMs = config.DNS_STATUS_LOG_INTERVAL_SECONDS * 1000;
+  statusIntervalId = setInterval(() => {
+    logStatusSummary().catch((err) => {
+      log(`DNS service status log failed: ${err.message}`, {
+        code: err.code || 'ERROR',
+        stack: err.stack
+      });
+    });
+  }, intervalMs);
+  statusIntervalId.unref();
+
+  log(`DNS service status reporter enabled every ${config.DNS_STATUS_LOG_INTERVAL_SECONDS}s`);
+  logStatusSummary().catch((err) => {
+    log(`Initial DNS service status log failed: ${err.message}`, {
+      code: err.code || 'ERROR',
+      stack: err.stack
+    });
+  });
+}
+
 module.exports = {
   startForRequest,
   resumePending,
-  getJobStats
+  getJobStats,
+  startStatusReporter
 };

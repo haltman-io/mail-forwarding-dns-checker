@@ -5,6 +5,7 @@ const checkdnsRoutes = require('./routes/checkdns');
 const jobs = require('./jobs/runner');
 const { log } = require('./util/time');
 const { sanitizeForLogAndEmail } = require('./util/sanitize');
+const { getDnsResolverSummary } = require('./dns/checker');
 var cors = require('cors')
 
 
@@ -92,6 +93,14 @@ const server = app.listen(config.PORT, config.HOST, () => {
   log(
     `DB query retry configured: retry_count=${config.DB_QUERY_RETRY_COUNT}, retry_delay_ms=${config.DB_QUERY_RETRY_DELAY_MS}`
   );
+  const resolverSummary = getDnsResolverSummary();
+  log(
+    `DNS resolver configured: source=${resolverSummary.source}, servers=${resolverSummary.servers.join(',')}`
+  );
+  log(
+    `DNS polling configured: poll_interval_seconds=${config.DNS_POLL_INTERVAL_SECONDS}, timeout_ms=${config.DNS_TIMEOUT_MS}, status_log_interval_seconds=${config.DNS_STATUS_LOG_INTERVAL_SECONDS}`
+  );
+  jobs.startStatusReporter();
   jobs.resumePending().catch((err) => {
     log(`Failed to resume jobs: ${err.message}`);
   });

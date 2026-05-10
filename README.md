@@ -61,9 +61,12 @@ curl http://localhost:3000/api/checkdns/example.com
 ## DNS Polling Behavior
 
 - Requests are inserted with status `PENDING` and `expires_at = now + DNS_JOB_MAX_AGE_HOURS` (default 24h).
+- A new request for an existing `target` + `type` refreshes the existing row, clears stale DNS results, resets it to `PENDING`, extends `expires_at`, and immediately runs a fresh DNS check.
 - An in-process background job checks DNS every `DNS_POLL_INTERVAL_SECONDS`.
 - Jobs stop when the request becomes `ACTIVE` or `EXPIRED`.
 - On restart, any pending, non-expired requests are resumed.
+- The process logs every DNS check with the configured/system DNS servers, found records, pending requirements, and partial resolver errors.
+- The process logs a general status summary every `DNS_STATUS_LOG_INTERVAL_SECONDS` seconds. Set it to `0` to disable.
 
 ## /api/checkdns/:target
 

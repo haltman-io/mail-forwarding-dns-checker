@@ -31,6 +31,158 @@ function isNotFoundError(err) {
   return err && (err.code === 'ENODATA' || err.code === 'ENOTFOUND' || err.code === 'NXDOMAIN');
 }
 
+function getSystemDnsServers() {
+  try {
+    return dns.getServers();
+  } catch (_err) {
+    return [];
+  }
+}
+
+function getDnsResolverSummary() {
+  const configuredServers = Array.isArray(config.DNS_SERVERS)
+    ? config.DNS_SERVERS.filter(Boolean)
+    : [];
+  if (configuredServers.length > 0) {
+    return {
+      source: 'configured',
+      servers: configuredServers
+    };
+  }
+
+  const systemServers = getSystemDnsServers();
+  return {
+    source: 'system',
+    servers: systemServers.length > 0 ? systemServers : ['system-default']
+  };
+}
+
+function createResolverForServer(server) {
+  const resolver = new dns.promises.Resolver();
+  resolver.setServers([server]);
+  return resolver;
+}
+
+function getDnsQueryTargets() {
+  const summary = getDnsResolverSummary();
+  if (summary.source === 'configured') {
+    return summary.servers.map((server) => ({
+      label: server,
+      resolver: createResolverForServer(server)
+    }));
+  }
+
+  return [
+    {
+      label: summary.servers.join(','),
+      resolver: dnsPromises
+    }
+  ];
+}
+
+function errorForDiagnostics(err) {
+  return {
+    code: err && err.code ? String(err.code) : 'ERROR',
+    message: err && err.message ? String(err.message).slice(0, 300) : 'Unknown DNS error'
+  };
+}
+
+function appendDnsQuery(collector, recordType, name, queryResults) {
+  if (!collector) return;
+
+  collector.push({
+    type: recordType,
+    name,
+    results: queryResults.map((result) => {
+      if (result.ok) {
+        return {
+          server: result.server,
+          ok: true,
+          found_count: result.records.length,
+          not_found: Boolean(result.notFound)
+        };
+      }
+
+      return {
+        server: result.server,
+        ok: false,
+        found_count: 0,
+        error: result.error
+      };
+    })
+  });
+}
+
+async function resolveRecordsSafe(recordType, target, queryFn, normalizeRecord, recordKey, collector) {
+  const queryTargets = getDnsQueryTargets();
+  const queryResults = await Promise.all(
+    queryTargets.map(async ({ label, resolver }) => {
+      try {
+        const rawRecords = await withTimeout(
+          queryFn(resolver, target),
+          config.DNS_TIMEOUT_MS,
+          `${recordType} ${target} via ${label}`
+        );
+
+        const records = rawRecords.map(normalizeRecord).filter(Boolean);
+        return {
+          server: label,
+          ok: true,
+          notFound: false,
+          records
+        };
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          return {
+            server: label,
+            ok: true,
+            notFound: true,
+            records: []
+          };
+        }
+
+        return {
+          server: label,
+          ok: false,
+          records: [],
+          error: errorForDiagnostics(err)
+        };
+      }
+    })
+  );
+
+  appendDnsQuery(collector, recordType, target, queryResults);
+
+  const hasUsableAnswer = queryResults.some((result) => result.ok);
+  if (!hasUsableAnswer) {
+    const details = queryResults
+      .map((result) => `${result.server}:${result.error ? result.error.code : 'ERROR'}`)
+      .join(', ');
+    const err = new Error(`DNS ${recordType} lookup failed for ${target} via ${details}`);
+    err.code = 'DNS_QUERY_FAILED';
+    err.dns = {
+      type: recordType,
+      name: target,
+      results: queryResults
+    };
+    throw err;
+  }
+
+  const seen = new Set();
+  const merged = [];
+  for (const result of queryResults) {
+    if (!result.ok) continue;
+    for (const record of result.records) {
+      const key = recordKey(record);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(record);
+    }
+  }
+
+  return merged;
+}
+
 function normalizeIp(ip) {
   if (!ip) return ip;
   return String(ip).trim().toLowerCase();
@@ -67,60 +219,65 @@ function hashValues(values) {
   return hash.digest('hex');
 }
 
-async function resolveCnameSafe(target) {
-  try {
-    const records = await withTimeout(dnsPromises.resolveCname(target), config.DNS_TIMEOUT_MS, 'CNAME');
-    return records.map(normalizeHost);
-  } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw err;
-  }
+async function resolveCnameSafe(target, collector) {
+  return resolveRecordsSafe(
+    'CNAME',
+    target,
+    (resolver, name) => resolver.resolveCname(name),
+    normalizeHost,
+    (record) => record,
+    collector
+  );
 }
 
-async function resolveMxSafe(target) {
-  try {
-    const records = await withTimeout(dnsPromises.resolveMx(target), config.DNS_TIMEOUT_MS, 'MX');
-    return records.map((rec) => ({
+async function resolveMxSafe(target, collector) {
+  return resolveRecordsSafe(
+    'MX',
+    target,
+    (resolver, name) => resolver.resolveMx(name),
+    (rec) => ({
       exchange: normalizeHost(rec.exchange),
       priority: rec.priority
-    }));
-  } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw err;
-  }
+    }),
+    (record) => `${record.exchange}|${record.priority}`,
+    collector
+  );
 }
 
-async function resolveTxtSafe(target) {
-  try {
-    const records = await withTimeout(dnsPromises.resolveTxt(target), config.DNS_TIMEOUT_MS, 'TXT');
-    return records.map((chunks) => chunks.join(''));
-  } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw err;
-  }
+async function resolveTxtSafe(target, collector) {
+  return resolveRecordsSafe(
+    'TXT',
+    target,
+    (resolver, name) => resolver.resolveTxt(name),
+    (chunks) => chunks.join(''),
+    (record) => record,
+    collector
+  );
 }
 
-async function resolveA4Safe(target) {
-  try {
-    const records = await withTimeout(dnsPromises.resolve4(target), config.DNS_TIMEOUT_MS, 'A');
-    return records.map(normalizeIp);
-  } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw err;
-  }
+async function resolveA4Safe(target, collector) {
+  return resolveRecordsSafe(
+    'A',
+    target,
+    (resolver, name) => resolver.resolve4(name),
+    normalizeIp,
+    (record) => record,
+    collector
+  );
 }
 
-async function resolveA6Safe(target) {
-  try {
-    const records = await withTimeout(dnsPromises.resolve6(target), config.DNS_TIMEOUT_MS, 'AAAA');
-    return records.map(normalizeIp);
-  } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw err;
-  }
+async function resolveA6Safe(target, collector) {
+  return resolveRecordsSafe(
+    'AAAA',
+    target,
+    (resolver, name) => resolver.resolve6(name),
+    normalizeIp,
+    (record) => record,
+    collector
+  );
 }
 
-async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDepth) {
+async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDepth, collector) {
   const normalizedAuthorizedIps = new Set(
     (authorizedIps || []).map(normalizeIp).filter(Boolean)
   );
@@ -149,7 +306,7 @@ async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDept
       visited.add(host);
       chain.push(host);
 
-      const cnameRecords = await resolveCnameSafe(host);
+      const cnameRecords = await resolveCnameSafe(host, collector);
       if (cnameRecords.length > 0) {
         sawCname = true;
         for (const cname of cnameRecords) {
@@ -159,8 +316,8 @@ async function resolveCnameChainToAuthorizedIp(startHost, authorizedIps, maxDept
         continue;
       }
 
-      const aRecords = await resolveA4Safe(host);
-      const aaaaRecords = await resolveA6Safe(host);
+      const aRecords = await resolveA4Safe(host, collector);
+      const aaaaRecords = await resolveA6Safe(host, collector);
       const ips = [...aRecords, ...aaaaRecords].map(normalizeIp).filter(Boolean);
 
       for (const ip of ips) {
@@ -259,15 +416,72 @@ function capAndSanitizeTxt(rawTxt) {
   };
 }
 
+function addResolverSnapshot(snapshot, queries) {
+  const resolverSummary = getDnsResolverSummary();
+  snapshot.dns_server_source = resolverSummary.source;
+  snapshot.dns_servers = resolverSummary.servers;
+  snapshot.dns_queries = queries;
+  snapshot.dns_query_error_count = queries.reduce(
+    (total, query) => total + query.results.filter((result) => !result.ok).length,
+    0
+  );
+}
+
+function formatFoundValue(item) {
+  if (!item || !Array.isArray(item.found) || item.found.length === 0) return '-';
+
+  const values = item.found.slice(0, 3).map((value) => {
+    if (value && typeof value === 'object') {
+      if (value.exchange) return `${value.exchange}:${value.priority}`;
+      return JSON.stringify(value);
+    }
+    return String(value);
+  });
+
+  const suffix = item.found.length > values.length ? `,+${item.found.length - values.length}` : '';
+  return `${values.join(',')}${suffix}`;
+}
+
+function describeCheckResult(check) {
+  const missing = Array.isArray(check && check.missing) ? check.missing : [];
+  const snapshot = check && check.snapshot && typeof check.snapshot === 'object' ? check.snapshot : {};
+  const servers = Array.isArray(snapshot.dns_servers) && snapshot.dns_servers.length > 0
+    ? snapshot.dns_servers.join(',')
+    : 'unknown';
+  const pending = missing.filter((item) => !item.ok).map((item) => item.key).join(',') || '-';
+  const found = missing.map((item) => {
+    const status = item.ok ? 'ok' : 'pending';
+    return `${item.key}:${status}:found=${formatFoundValue(item)}`;
+  }).join(' | ');
+  const queryErrors = Array.isArray(snapshot.dns_queries)
+    ? snapshot.dns_queries.flatMap((query) =>
+        query.results
+          .filter((result) => !result.ok)
+          .map((result) => `${query.type} ${query.name} via ${result.server}=${result.error.code}`)
+      )
+    : [];
+  const errorSummary = queryErrors.length > 0
+    ? ` dns_errors=${queryErrors.slice(0, 4).join(';')}${queryErrors.length > 4 ? ';...' : ''}`
+    : '';
+
+  return `ok=${Boolean(check && check.ok)} dns_servers=${servers} pending=${pending} found=[${found}]${errorSummary}`;
+}
+
 async function checkUi(target) {
   const apexName = normalizeHost(target);
   const expectedCname = normalizeHost(config.UI_CNAME_EXPECTED);
   const authorizedCnameIps = (config.UI_CNAME_AUTHORIZED_IPS || []).map(normalizeIp).filter(Boolean);
+  const dnsQueries = [];
 
-  const cnameRecords = await resolveCnameSafe(apexName);
+  const cnameRecords = await resolveCnameSafe(apexName, dnsQueries);
   const directCnameOk = cnameRecords.some((record) => normalizeHost(record) === expectedCname);
   const cnameChainResolution = authorizedCnameIps.length > 0
-    ? await resolveCnameChainToAuthorizedIp(apexName, authorizedCnameIps, config.UI_CNAME_MAX_CHAIN_DEPTH)
+    ? await resolveCnameChainToAuthorizedIp(
+        apexName,
+        authorizedCnameIps,
+        config.UI_CNAME_MAX_CHAIN_DEPTH,
+        dnsQueries
+      )
     : null;
   const cnameOk = directCnameOk || (cnameChainResolution ? cnameChainResolution.ok : false);
 
@@ -320,6 +534,7 @@ async function checkUi(target) {
   }
 
   if (cnameMeta.hash) snapshot.cname_hash = cnameMeta.hash;
+  addResolverSnapshot(snapshot, dnsQueries);
 
   return {
     ok: cnameOk,
@@ -338,11 +553,14 @@ async function checkEmail(target) {
   const expectedMxPriority = config.EMAIL_MX_EXPECTED_PRIORITY;
   const expectedSpf = config.EMAIL_SPF_EXPECTED;
   const expectedDmarc = config.EMAIL_DMARC_EXPECTED;
+  const dnsQueries = [];
 
-  const dkimCnameRecords = await resolveCnameSafe(dkimName);
-  const mxRecords = await resolveMxSafe(apexName);
-  const txtApex = await resolveTxtSafe(apexName);
-  const txtDmarc = await resolveTxtSafe(dmarcName);
+  const [dkimCnameRecords, mxRecords, txtApex, txtDmarc] = await Promise.all([
+    resolveCnameSafe(dkimName, dnsQueries),
+    resolveMxSafe(apexName, dnsQueries),
+    resolveTxtSafe(apexName, dnsQueries),
+    resolveTxtSafe(dmarcName, dnsQueries)
+  ]);
 
   const mxOk = mxRecords.some(
     (rec) => rec.exchange === expectedMxHost && rec.priority === expectedMxPriority
@@ -419,6 +637,7 @@ async function checkEmail(target) {
   if (mxMeta.hash) snapshot.mx_hash = mxMeta.hash;
   if (txtApexMeta.hash) snapshot.txt_apex_hash = txtApexMeta.hash;
   if (txtDmarcMeta.hash) snapshot.txt_dmarc_hash = txtDmarcMeta.hash;
+  addResolverSnapshot(snapshot, dnsQueries);
 
   return {
     ok: mxOk && spfOk && dmarcOk && dkimOk,
@@ -439,5 +658,7 @@ async function checkByType(type, target) {
 module.exports = {
   checkByType,
   checkUi,
-  checkEmail
+  checkEmail,
+  describeCheckResult,
+  getDnsResolverSummary
 };
