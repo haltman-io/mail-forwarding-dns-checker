@@ -7,7 +7,10 @@ const { checkByType, describeCheckResult } = require('../dns/checker');
 const jobs = require('../jobs/runner');
 const mailer = require('../mailer');
 const { buildResultPayload } = require('../util/result');
-const { markDomainAsActive } = require('../util/domain-activation');
+const {
+  markDomainApprovalActive,
+  markDomainApprovalInactive
+} = require('../util/domain-activation');
 const { sanitizeForLogAndEmail } = require('../util/sanitize');
 
 const router = express.Router();
@@ -116,8 +119,10 @@ async function runImmediateCheck(row) {
     }
 
     if (statusActivated) {
-      await markDomainAsActive(row.target);
+      await markDomainApprovalActive(row.target, row.type, { lastResult: payload });
     }
+  } else {
+    await markDomainApprovalInactive(row.target, row.type);
   }
 
   return { ok: check.ok };

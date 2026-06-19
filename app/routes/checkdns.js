@@ -6,7 +6,10 @@ const { toIso, log, now, addSeconds } = require('../util/time');
 const { checkByType, describeCheckResult } = require('../dns/checker');
 const { buildResultPayload } = require('../util/result');
 const mailer = require('../mailer');
-const { markDomainAsActive } = require('../util/domain-activation');
+const {
+  markDomainApprovalActive,
+  markDomainApprovalInactive
+} = require('../util/domain-activation');
 
 const router = express.Router();
 const readOnlyChecks = new Map();
@@ -265,13 +268,15 @@ async function persistCheckResult(row, rowType, check) {
       row.activated_at = checkedAt;
       log(`Status updated for ${rowType} ${row.target}: ACTIVE`);
       await sendActiveNotification(row, rowType, payload);
-      await markDomainAsActive(row.target);
+      await markDomainApprovalActive(row.target, rowType, { lastResult: payload });
     } else {
       const refreshedRows = await db.query('SELECT * FROM dns_requests WHERE id = ?', [row.id]);
       if (refreshedRows.length > 0) {
         Object.assign(row, refreshedRows[0]);
       }
     }
+  } else {
+    await markDomainApprovalInactive(row.target, rowType);
   }
 
   return payload;

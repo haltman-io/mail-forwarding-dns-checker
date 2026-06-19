@@ -2,7 +2,9 @@ const express = require('express');
 const config = require('./config');
 const requestRoutes = require('./routes/request');
 const checkdnsRoutes = require('./routes/checkdns');
+const recheckdnsRoutes = require('./routes/recheckdns');
 const jobs = require('./jobs/runner');
+const recheckJobs = require('./jobs/rechecker');
 const { log } = require('./util/time');
 const { sanitizeForLogAndEmail } = require('./util/sanitize');
 const { getDnsResolverSummary } = require('./dns/checker');
@@ -61,6 +63,7 @@ app.use((req, res, next) => {
 
 app.use(requestRoutes);
 app.use(checkdnsRoutes);
+app.use(recheckdnsRoutes);
 
 // ── Health check ────────────────────────────────────────────
 app.get('/healthz', (_req, res) => {
@@ -104,6 +107,7 @@ const server = app.listen(config.PORT, config.HOST, () => {
   jobs.resumePending().catch((err) => {
     log(`Failed to resume jobs: ${err.message}`);
   });
+  recheckJobs.start();
 });
 
 // ── Graceful shutdown ───────────────────────────────────────
@@ -111,6 +115,7 @@ const { pool } = require('./db');
 
 function shutdown(signal) {
   log(`Received ${signal}, shutting down gracefully…`);
+  recheckJobs.stop();
   server.close(() => log('HTTP server closed'));
   pool.end().then(() => {
     log('DB pool closed');

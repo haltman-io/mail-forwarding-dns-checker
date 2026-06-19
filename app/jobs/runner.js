@@ -5,7 +5,10 @@ const mailer = require('../mailer');
 const { now, addSeconds, log } = require('../util/time');
 const { buildResultPayload } = require('../util/result');
 const { sanitizeForLogAndEmail } = require('../util/sanitize');
-const { markDomainAsActive } = require('../util/domain-activation');
+const {
+  markDomainApprovalActive,
+  markDomainApprovalInactive
+} = require('../util/domain-activation');
 
 const jobs = new Map();
 const queue = [];
@@ -100,7 +103,7 @@ async function updateStatus(row, status, failReason, lastResult) {
   }
 
   if (status === 'ACTIVE') {
-    await markDomainAsActive(row.target);
+    await markDomainApprovalActive(row.target, row.type, { lastResult: lastResultParsed });
   }
 
   return true;
@@ -127,6 +130,7 @@ async function runCheck(requestId, key) {
     const nowDate = now();
     if (row.expires_at && nowDate >= row.expires_at) {
       await updateStatus(row, 'EXPIRED', 'Request expired');
+      await markDomainApprovalInactive(row.target, row.type);
       stopJob(key);
       return;
     }
@@ -150,6 +154,8 @@ async function runCheck(requestId, key) {
     if (check.ok) {
       await updateStatus(row, 'ACTIVE', null, payload);
       stopJob(key);
+    } else {
+      await markDomainApprovalInactive(row.target, row.type);
     }
   } catch (err) {
     log(`DNS check error for ${key}: ${err.message}`, {
