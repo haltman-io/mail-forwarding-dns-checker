@@ -373,7 +373,6 @@ async function getDueRows() {
   return db.query(
     `SELECT
        r.*,
-       d.id AS domain_id,
        d.name AS domain_name,
        d.active,
        d.active_mx,
@@ -400,7 +399,6 @@ async function getRecheckRowsForForce(target = null) {
   return db.query(
     `SELECT
        r.*,
-       d.id AS domain_id,
        d.name AS domain_name,
        d.active,
        d.active_mx,
